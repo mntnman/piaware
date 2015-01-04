@@ -178,7 +178,8 @@ proc send_if_logged_in {line} {
     }
 
 	if {[catch {send_adsb_line $line} catchResult] == 1} {
-		log_locally "error uploading ADS-B message: $catchResult"
+            log_locally "error uploading ADS-B message: $catchResult"
+            log_locally "line was: >$line<"
 	}
 }
 
