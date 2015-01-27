@@ -1,8 +1,8 @@
-piaware-mutability (1.19-3mu-2ubuntu1) UNRELEASED; urgency=medium
+piaware-mutability (1.19-3mu-2ubuntu1) trusty; urgency=medium
 
   * Ubuntu rebuild.
 
- -- Oliver Jowett <oliver@mutability.co.uk>  Tue, 27 Jan 2015 13:14:37 +0000
+ -- Oliver Jowett <oliver@mutability.co.uk>  Tue, 27 Jan 2015 13:16:10 +0000
 
 piaware-mutability (1.19-3mu-2) unstable; urgency=medium
 
