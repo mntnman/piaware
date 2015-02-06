@@ -101,47 +101,6 @@ proc confirm_nonblank_user_and_password_or_die {} {
 	}
 }
 
-# log_stdout_stderr_to_file - redirect stdout and stderr to a log file
-#
-proc log_stdout_stderr_to_file {} {
-	# log to /tmp/piaware.out
-	set fp [open /tmp/piaware.out a]
-	fconfigure $fp -buffering line
-	dup $fp stdout
-	dup $fp stderr
-	close $fp
-}
-
-#
-# switch_logfile - close and rename the log file and open a new one
-#
-proc switch_logfile {} {
-	log_locally "switching log files"
-	file rename -force -- /tmp/piaware.out /tmp/piaware.out.yesterday
-	log_stdout_stderr_to_file
-}
-
-#
-# schedule_logfile_switch - schedule a logfile switch in the appropriate number
-#  of milliseconds that it's at midnight
-#
-proc schedule_logfile_switch {} {
-	set secsPerDay 86400
-	set now [clock seconds]
-	set clockAtNextMidnight [expr {(((($now + 60) / $secsPerDay) + 1) * $secsPerDay) - 1}]
-	set secondsUntilMidnight [expr {$clockAtNextMidnight - $now}]
-	after [expr {$secondsUntilMidnight * 1000}] schedule_logfile_switch_and_switch_logfile
-}
-
-#
-# schedule_logfile_switch_and_switch_logfile - schedule the next logfile
-#  switch and perform the current logfile switch
-#
-proc schedule_logfile_switch_and_switch_logfile {} {
-	schedule_logfile_switch
-	switch_logfile
-}
-
 #
 # create_pidfile - create a pidfile for this process if possible if so
 #   configured
@@ -178,6 +137,7 @@ proc remove_pidfile {} {
 # setup_signals - arrange for common signals to shutdown the program
 #
 proc setup_signals {} {
+        set ::ignoreShutdown 0
 	signal trap HUP "shutdown %S"
 	signal trap TERM "shutdown %S"
 	signal trap INT "shutdown %S"
@@ -187,8 +147,12 @@ proc setup_signals {} {
 # shutdown - shutdown signal handler
 #
 proc shutdown {{reason ""}} {
-	logger "$::argv0 is shutting down because it received a shutdown signal ($reason) from the system..."
+    if {! $::ignoreShutdown} {
+	logger "$::argv0 (process [pid]) is shutting down because it received a shutdown signal ($reason) from the system..."
 	cleanup_and_exit
+    } else {
+        log_locally "Ignoring shutdown signal as we are running a hook script"
+    }
 }
 
 #
@@ -198,7 +162,7 @@ proc shutdown {{reason ""}} {
 proc cleanup_and_exit {} {
 	stop_faup1090
 	remove_pidfile
-	logger "$::argv0 is exiting..."
+	logger "$::argv0 (process [pid]) is exiting..."
 	exit 0
 }
 
