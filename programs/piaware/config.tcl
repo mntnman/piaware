@@ -9,8 +9,8 @@
 
 set serverRetryIntervalSeconds 60
 
-set piawareVersion 1.20
-set piawareVersionFull 1.20-1
+set piawareVersion 2.1
+set piawareVersionFull 2.1-1mu
 
 # how many seconds with no messages received from the ADS-B receiver before
 # we will attempt to restart dump1090
@@ -26,8 +26,7 @@ set sendHealthInformationIntervalSeconds 300
 # for before we will attempt to start it
 set adsbNoProducerStartDelaySeconds 360
 
-# port on which flightaware-style messages are received from faup1090 or
-# dump1090 or some other mode S beast-style source
-set faup1090Port 10001
+# where we store our location info
+set locationFile "/var/cache/piaware-mutability/latlon"
 
 # vim: set ts=4 sw=4 sts=4 noet :

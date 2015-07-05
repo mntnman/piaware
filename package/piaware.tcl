@@ -1,3 +1,4 @@
+# -*- mode: tcl; tab-width: 4; indent-tabs-mode: t -*-
 #
 # piaware package - Copyright (C) 2014 FlightAware LLC
 #
@@ -66,7 +67,7 @@ proc load_piaware_config_and_stuff {} {
     if {![info exists ::imageType]} {
 		if {[query_dpkg_name_and_version "piaware-mutability" packageName packageVersion]} {
 			set ::imageType "${packageName}_package"
-			set ::fullVersionID $packageVersion
+			set ::piawarePackageVersion $packageVersion
 		}
     }
 }
@@ -134,6 +135,29 @@ proc is_piaware_running {} {
 }
 
 #
+# dump1090_any_bad_args - check for bad args (--no-crc-check,
+#  --agressive). Returns 1 if found, 0 if not
+#
+proc dump1090_any_bad_args {} {
+	
+	set fp [open "|ps auxww | grep dump1090"]
+
+	set bad_args [list "--no-crc-check" "--aggressive"]
+
+	while {[gets $fp pid] >= 0} {
+        foreach arg $bad_args {
+			 # search the process for bad arguments
+             if {[string last $arg $pid] != -1} {
+				return 1
+             }
+        }
+	}
+	close $fp
+	
+	return 0
+}
+
+#
 # test_port_for_traffic - connect to a port and
 #  see if we can read a byte before a timeout expires.
 #
@@ -174,41 +198,25 @@ proc process_netstat_socket_line {line} {
     lassign $line proto recvq sendq localAddress foreignAddress state pidProg
     lassign [split $pidProg "/"] pid prog
 
-    # NB: IPv6 addresses may contain colons
-    set localAddrHost [join [lrange [split $localAddress ":"] 0 end-1] ":"]
-    set localAddrPort [lindex [split $localAddress ":"] end]
-    set foreignAddrHost [join [lrange [split $foreignAddress ":"] 0 end-1] ":"]
-    set foreignAddrPort [lindex [split $foreignAddress ":"] end]
-
     if {$pid == "-"} {
-        set prog "unknown-port-${localAddrPort}-process"
+        set prog "unknown"
     }
 
-    if {$localAddrPort == "30005" && $state == "LISTEN"} {
+    if {[string match "*:30005" $localAddress] && $state == "LISTEN"} {
 		set ::netstatus(program_30005) $prog
 		set ::netstatus(status_30005) 1
     }
 
-    if {$localAddrPort == "10001" && $state == "LISTEN"} {
-		set ::netstatus(program_10001) $prog
-		set ::netstatus(status_10001) 1
-    }
-
-
     switch $prog {
 		"faup1090" {
-			if {$foreignAddrPort == "30005" && $state == "ESTABLISHED"} {
+			if {[string match "*:30005" $foreignAddress] && $state == "ESTABLISHED"} {
 				set ::netstatus(faup1090_30005) 1
 			}
 		}
 
 		"piaware" {
 			set ::running(piaware) 1
-			if {$foreignAddrPort == "10001" && $state == "ESTABLISHED"} {
-				set ::netstatus(piaware_10001) 1
-			}
-
-			if {$foreignAddrPort == "1200" && $state == "ESTABLISHED"} {
+			if {[string match "*:1200" $foreignAddress] && $state == "ESTABLISHED"} {
 				set ::netstatus(piaware_1200) 1
 			}
 		}
@@ -223,12 +231,10 @@ proc inspect_sockets_with_netstat {} {
     set ::running(faup1090) 0
     set ::running(piaware) 0
     set ::netstatus(status_30005) 0
-    set ::netstatus(status_10001) 0
     set ::netstatus(faup1090_30005) 0
-    set ::netstatus(piaware_10001) 0
     set ::netstatus(piaware_1200) 0
 
-    set fp [open "|netstat --program --tcp --wide --all --numeric 2>/dev/null"]
+    set fp [open "|netstat --program --protocol=inet --tcp --wide --all --numeric 2>/dev/null"]
     # discard two header lines
     gets $fp
     gets $fp
@@ -258,23 +264,13 @@ proc subst_is_or_is_not {string value} {
 proc netstat_report {} {
     inspect_sockets_with_netstat
 
-    foreach port "30005 10001" {
-		set statusvar "status_$port"
-		set programvar "program_$port"
+	if {!$::netstatus(status_30005)} {
+		puts "no program appears to be listening for connections on port $port."
+	} else {
+		puts "$::netstatus(program_30005) is listening for connections on port $port."
+	}
 
-		if {!$::netstatus($statusvar)} {
-			puts "no program appears to be listening for connections on port $port."
-		} else {
-			puts "$::netstatus($programvar) is listening for connections on port $port."
-		}
-    }
-
-    if {$::netstatus(faup1090_30005)} {
-		puts "faup1090 is connected to port 30005"
-    }
-
-    puts "[subst_is_or_is_not "piaware %s connected to port 10001." $::netstatus(piaware_10001)]"
-
+    puts "[subst_is_or_is_not "faup1090 %s connected to port 30005." $::netstatus(faup1090_30005)]"
     puts "[subst_is_or_is_not "piaware %s connected to FlightAware." $::netstatus(piaware_1200)]"
 }
 
@@ -305,9 +301,6 @@ proc reap_any_dead_children {} {
 				switch $code {
 					default {
 						logger "the system told us that process $pid exited due to some general error"
-					}
-					98 {
-						logger "the system confirmed that process $pid exited.  the exit status of $code tells us that faup1090 couldn't open the listening port because something else already has it open"
 					}
 
 					0 {
@@ -556,10 +549,23 @@ proc fetch_url_as_string {url} {
 }
 
 #
+# fetch_url_as_binary_file_callback - callback routine for
+#   fetch_url_as_binary_file_callback for the completion or timeout
+#   of http requests
+#
+proc fetch_url_as_binary_file_callback {sock token} {
+	# ok we got the callback, set the global variable
+	# that fetch_url_as_binary_file is vwaiting on,
+	# so that it can go on
+	set ::fetchUrlVwaitVar 1
+}
+
+
+#
 # fetch_url_as_binary_file - fetch the URL to the file, 1 on success else 0
 #
 proc fetch_url_as_binary_file {url outputFile} {
-    set req [::http::geturl $url -timeout 15000 -binary 1 -strict 0]
+    set req [::http::geturl $url -timeout 900000 -binary 1 -strict 0]
 
     set status [::http::status $req]
     set data [::http::data $req]
@@ -607,11 +613,16 @@ proc upgrade_dump1090 {} {
 # program, so it's a bit tricky
 #
 proc restart_piaware {} {
-    logger "restarting piaware. hopefully i'll be right back..."
-    exec_hook_script_in_background "restart_piaware"
-    sleep 10
-    logger "piaware failed to die, pid [pid], that's me, i'm gonna kill myself"
-    exit 0
+	logger "restarting piaware. hopefully i'll be right back..."
+	exec_hook_script_in_background "restart_piaware"
+
+	# sleep apparently restarts on signals, we want to process them,
+	# so use after/vwait so the event loop runs.
+	after 10000 [list set ::die 1]
+	vwait ::die
+
+	logger "piaware failed to die, pid [pid], that's me, i'm gonna kill myself"
+	exit 0
 }
 
 #

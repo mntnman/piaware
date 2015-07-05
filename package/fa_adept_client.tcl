@@ -1,3 +1,4 @@
+# -*- mode: tcl; tab-width: 4; indent-tabs-mode: t -*-
 #
 # fa_adept_client - Itcl class for connecting to and communicating with
 #  an Open Aviation Data Exchange Protocol service
@@ -15,7 +16,7 @@ namespace eval ::fa_adept {
 ::itcl::class AdeptClient {
     public variable sock
     public variable host
-    public variable hosts [list eyes.flightaware.com 70.42.6.203]
+    public variable hosts [list piaware.flightaware.com 70.42.6.203 piaware.flightaware.com 70.42.6.194]
     public variable port 1200
     public variable connectRetryIntervalSeconds 60
     public variable connected 0
@@ -27,6 +28,7 @@ namespace eval ::fa_adept {
 	protected variable aliveTimerID
 	protected variable nextHostIndex 0
 	protected variable lastCompressClock 0
+	protected variable flushPending 0
 
     constructor {args} {
 		configure {*}$args
@@ -132,13 +134,17 @@ namespace eval ::fa_adept {
 		#logger "TLS local status: [::tls::status -local $sock]"
 		log_locally "encrypted session established with FlightAware"
 
-		# configure the socket nonblocking line-buffered and
+		# configure the socket nonblocking full-buffered and
 		# schedule this object's server_data_available method
 		# to be invoked when data is available on the socket
+		# we arrange to call flush periodically while output is pending,
+		# to get better batching of data while still getting it out
+		# promptly
 
-		fconfigure $sock -buffering line -blocking 0 -translation binary
+		fconfigure $sock -buffering full -buffersize 4096 -blocking 0 -translation binary
 		fileevent $sock readable [list $this server_data_available]
 		set connected 1
+		set flushPending 0
 
 		# ok, we're connected, now attempt to login
 		# note that login reply will be asynchronous to us, i.e.
@@ -300,7 +306,7 @@ namespace eval ::fa_adept {
 	method handle_response {_row} {
 		upvar $_row row
 
-		switch $row(type) {
+		switch -glob $row(type) {
 			"login_response" {
 				handle_login_response_message row
 			}
@@ -323,6 +329,14 @@ namespace eval ::fa_adept {
 
 			"request_manual_update" {
 				handle_update_request manual row
+			}
+
+			"mlat_*" {
+				forward_to_mlat_client row
+			}
+
+			"update_location" {
+				handle_update_location row
 			}
 
 			default {
@@ -354,6 +368,11 @@ namespace eval ::fa_adept {
 				set ::flightaware_user $row(user)
 			}
 
+			# if we received lat/lon data, handle it
+			if {[info exists row(recv_lat)] && [info exists row(recv_lon)]} {
+				update_location $row(recv_lat) $row(recv_lon)
+			}
+
 			log_locally "logged in to FlightAware as user $::flightaware_user"
 			cancel_connect_timer
 		} else {
@@ -366,6 +385,14 @@ namespace eval ::fa_adept {
 			log_locally "You can start it up again using 'sudo /etc/init.d/piaware start'"
 			exit 4
 		}
+	}
+
+	#
+	# handle_update_location - handle a location-update notification from the server
+	#
+	method handle_update_location {_row} {
+		upvar $_row row
+		update_location $row(recv_lat) $row(recv_lon)
 	}
 
 	#
@@ -619,6 +646,7 @@ namespace eval ::fa_adept {
 			unset sock
 		}
 
+		disable_mlat
 		reap_any_dead_children
     }
 
@@ -644,12 +672,8 @@ namespace eval ::fa_adept {
 		set message(type) login
 
 		# construct some key-value pairs to be included.
-		#
-		# note that there are two possible sources for piaware_version_full.
-		# the last one found will be used.
-		#
-		foreach var "user password piaware_version image_type piaware_version_full piaware_version_full" globalVar "::flightaware_user ::flightaware_password ::piawareVersion ::imageType ::piawareVersionFull ::fullVersionID" {
-			if {[info exists $globalVar]} {
+		foreach var "user password image_type piaware_version piaware_version_full piaware_package_version" globalVar "::flightaware_user ::flightaware_password ::imageType ::piawareVersion ::piawareVersionFull ::piawarePackageVersion" {
+			if {[info exists $globalVar] && [set $globalVar] ne ""} {
 				set message($var) [set $globalVar]
 			}
 		}
@@ -660,9 +684,7 @@ namespace eval ::fa_adept {
 			set message(adsbprogram) $::netstatus(program_30005)
 		}
 
-		if {[info exists ::netstatus(program_10001)]} {
-			set message(transprogram) $::netstatus(program_10001)
-		}
+		set message(transprogram) "faup1090"
 
 		set message(mac) [get_mac_address_or_quit]
 
@@ -673,8 +695,9 @@ namespace eval ::fa_adept {
 
 		set message(local_auto_update_enable) [update_check autoUpdate]
 		set message(local_manual_update_enable) [update_check manualUpdate]
+		set message(local_mlat_enable) [mlat_is_configured]
 
-		set message(compression_version) 1.0
+		set message(compression_version) 1.2
 
 		send_array message
 	}
@@ -789,6 +812,12 @@ namespace eval ::fa_adept {
 	#  disconnects and schedules reconnection shortly in the future
     #
     method send {text} {
+		if {![is_connected]} {
+			# we might be halfway through a reconnection.
+			# drop data on the floor
+			return
+		}
+
 		if {$showTraffic} {
 			puts "> $text"
 		}
@@ -796,8 +825,26 @@ namespace eval ::fa_adept {
 		if {[catch {puts $sock $text} catchResult] == 1} {
 			log_locally "got '$catchResult' writing to FlightAware socket, reconnecting..."
 			close_socket_and_reopen
+			return
+		}
+
+		if {!$flushPending} {
+			set flushPending 1
+			after 200 [list $this flush_output]
 		}
     }
+
+	# flush any buffered output
+	method flush_output {} {
+		set flushPending 0
+		if {[info exists sock]} {
+			if {[catch {flush $sock} catchResult] == 1} {
+				log_locally "got '$catchResult' writing to FlightAware socket, reconnecting..."
+				close_socket_and_reopen
+				return
+			}
+		}
+	}
 
 	#
 	# send_array - send an array as a message
@@ -805,7 +852,14 @@ namespace eval ::fa_adept {
 	method send_array {_row} {
 		upvar $_row row
 
-		set row(clock) [clock seconds]
+		if {[info exists row(clock)]} {
+			set now [clock seconds]
+			if {abs($now - $row(clock)) > 1} {
+				set row(sent_at) $now
+			}
+		} else {
+			set row(clock) [clock seconds]
+		}
 
 		if {$loggedIn} {
 			compress_array row
@@ -839,10 +893,19 @@ namespace eval ::fa_adept {
 			}
 		}
 
-		foreach "var keyChar format" "clock c I hexid h H6 ident i A8 alt a I lat l R lon m R speed s S squawk q H4 heading H S" {
+		foreach "var keyChar format" "clock c I sent_at C I hexid h H6 ident i A8 alt a I lat l R lon m R speed s S squawk q H4 heading H S" {
 			if {[info exists row($var)]} {
 				append newKey $keyChar
 				append binData [binary format $format $row($var)]
+				unset row($var)
+			}
+		}
+
+		# These keys expect a list-format value:
+		foreach "var keyChar format" "m_short S H12H14 m_long L H12H28 m_sync Y H12H28H12H28" {
+			if {[info exists row($var)]} {
+				append newKey $keyChar
+				append binData [binary format $format {*}$row($var)]
 				unset row($var)
 			}
 		}

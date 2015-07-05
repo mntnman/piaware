@@ -109,6 +109,12 @@ case "$1" in
 	  # but otherwise unreadable.
 	  chown root:"$RET" /etc/piaware.adept.conf
 	  chmod 0640 /etc/piaware.adept.conf
+
+          # /var/cache/piaware-mutability will hold a little state (receiver location);
+          # make it writable by the piaware user.
+          mkdir -p /var/cache/piaware-mutability
+          chown "$RET":"$RET" /var/cache/piaware-mutability
+          chmod 0755 /var/cache/piaware-mutability
         fi
     ;;
 

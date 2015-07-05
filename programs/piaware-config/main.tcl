@@ -1,3 +1,4 @@
+# -*- mode: tcl; tab-width: 4; indent-tabs-mode: t -*-
 #
 # fa_adept aka piaware-config - interactive program to
 #  set flightaware user ID and password
@@ -30,6 +31,8 @@ proc main {{argv ""}} {
 		{password "interactively specify the password of the FlightAware account"}
 		{autoUpdate.arg "" "1 = allow FlightAware to automatically update software on my Pi, 0 = no"}
 		{manualUpdate.arg "" "1 = allow me to trigger manual updates through FlightAware, 0 = no"}
+		{mlat.arg "" "1 = allow multilateration data to be provided, 0 = no"}
+		{mlatResults.arg "" "1 = send multilateration results to localhost:30004, 0 = no"}
 		{start "attempt to start the ADS-B client"}
 		{stop "attempt to stop the ADS-B client"}
 		{restart "attempt to restart the ADS-B client"}
@@ -37,7 +40,7 @@ proc main {{argv ""}} {
 		{show "show config file"}
 	}
 
-	set usage ": $::argv0 -help|-user|-password|-start|-stop|-status|-autoUpdate 1/0|-manualUpdate 1/0"
+	set usage ": $::argv0 -help|-user|-password|-start|-stop|-restart|-status|-autoUpdate 1/0|-manualUpdate 1/0|-mlat 1/0"
 
 	if {$argv == ""} {
 		puts stderr "usage$usage"
